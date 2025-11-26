@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 校園迷宮逃脫</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #87CEEB; /* 天空藍 */
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        #hud {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            color: #fff;
+            text-shadow: 2px 2px 4px #000;
+            font-size: 24px;
+            font-weight: bold;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.3), transparent);
+        }
+        #blocker {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            z-index: 10;
+        }
+        #instructions {
+            width: 500px;
+            padding: 30px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            text-align: center;
+            color: #333;
+            cursor: pointer;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            border: 1px solid #ddd;
+        }
+        #instructions:hover {
+            transform: scale(1.02);
+            transition: transform 0.1s;
+        }
+        h1 { margin: 0 0 15px 0; color: #2c3e50; font-size: 36px; }
+        p { font-size: 18px; margin: 8px 0; color: #555; }
+        .key {
+            background: #eee;
+            color: #333;
+            padding: 4px 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-family: monospace;
+            font-weight: bold;
+            box-shadow: 0 2px 0 #bbb;
+        }
+        .warning { color: #e74c3c; font-size: 14px; margin-top: 15px; font-weight: bold;}
+        
+        #result-screen {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.85);
+            color: white;
+            z-index: 20;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            pointer-events: auto;
+        }
+        button {
+            padding: 15px 40px;
+            font-size: 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            margin-top: 20px;
+            box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
+            transition: all 0.2s;
+        }
+        button:hover { background: #2980b9; transform: translateY(-2px); }
+        .win-text { color: #2ecc71; font-size: 50px; text-shadow: 0 0 20px rgba(46, 204, 113, 0.5); font-weight: 800; }
+        .lose-text { color: #e74c3c; font-size: 50px; text-shadow: 0 0 20px rgba(231, 76, 60, 0.5); font-weight: 800; }
+    </style>
+</head>
+<body>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer">
+        <div id="hud">
+            <div id="time-display">時間: 02:00</div>
+            <div id="status">尋找綠色光柱 (出口)</div>
+        </div>
+    </div>
+
+    <!-- Start Screen / Blocker -->
+    <div id="blocker">
+        <div id="instructions">
+            <h1>校園迷宮逃脫</h1>
+            <p>點擊此處開始遊戲</p>
+            <hr style="border: 0; border-top: 1px solid #ddd; margin: 15px 0;">
+            <p>移動：<span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span></p>
+            <p>視角：移動滑鼠 (滑鼠會隱藏)</p>
+            <p>暫停/顯示滑鼠：按 <span class="key">ESC</span></p>
+            <p class="warning">※ 請確認輸入法為英文模式，否則無法移動！</p>
+        </div>
+    </div>
+
+    <!-- Game Over / Win Screen -->
+    <div id="result-screen">
+        <div id="result-message" class="win-text"></div>
+        <p id="result-detail" style="font-size: 20px; margin-top: 10px;"></p>
+        <button onclick="location.reload()">再玩一次</button>
+    </div>
+
+    <!-- Import Map (Three.js) -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- 全域變數 ---
+        let camera, scene, renderer, controls;
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+
+        // 遊戲設定
+        const TILE_SIZE = 25; // 加大格子
+        const WALL_HEIGHT = 20; // 建築高度
+        const MAZE_SIZE = 15; // 迷宮大小 (奇數)
+        let maze = [];
+        let exitPosition = new THREE.Vector3();
+        
+        // 遊戲狀態
+        let gameActive = false;
+        let timeLeft = 120; // 2分鐘
+        let timerInterval;
+
+        // --- 初始化 ---
+        init();
+        animate();
+
+        function init() {
+            // 場景 - 戶外明亮風格
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // 天空藍
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 150); // 遠處霧氣
+
+            // 相機
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.y = 8; // 玩家高度
+
+            // 燈光 - 模擬太陽
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            sunLight.position.set(50, 100, 50);
+            sunLight.castShadow = true;
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 500;
+            sunLight.shadow.camera.left = -100;
+            sunLight.shadow.camera.right = 100;
+            sunLight.shadow.camera.top = 100;
+            sunLight.shadow.camera.bottom = -100;
+            sunLight.shadow.mapSize.width = 2048;
+            sunLight.shadow.mapSize.height = 2048;
+            scene.add(sunLight);
+
+            // 控制器
+            controls = new PointerLockControls(camera, document.body);
+
+            const blocker = document.getElementById('blocker');
+            const instructions = document.getElementById('instructions');
+
+            // 點擊 instructions 鎖定指針
+            instructions.addEventListener('click', function () {
+                controls.lock();
+            });
+
+            controls.addEventListener('lock', function () {
+                instructions.style.display = 'none';
+                blocker.style.display = 'none';
+                
+                // 修正：每次鎖定時重置時間與速度，防止瞬間位移或卡住
+                prevTime = performance.now();
+                velocity.set(0, 0, 0);
+
+                if (!gameActive && timeLeft > 0) {
+                    gameActive = true;
+                    startTimer();
+                }
+            });
+
+            controls.addEventListener('unlock', function () {
+                blocker.style.display = 'flex';
+                instructions.style.display = 'flex';
+                instructions.querySelector('h1').innerText = "遊戲暫停";
+                instructions.querySelector('p').innerText = "點擊畫面繼續";
+                
+                // 修正：暫停時停止遊戲邏輯
+                gameActive = false;
+            });
+
+            scene.add(controls.getObject());
+
+            // 鍵盤事件
+            const onKeyDown = function (event) {
+                switch (event.code) {
+                    case 'ArrowUp':
+                    case 'KeyW': moveForward = true; break;
+                    case 'ArrowLeft':
+                    case 'KeyA': moveLeft = true; break;
+                    case 'ArrowDown':
+                    case 'KeyS': moveBackward = true; break;
+                    case 'ArrowRight':
+                    case 'KeyD': moveRight = true; break;
+                }
+            };
+
+            const onKeyUp = function (event) {
+                switch (event.code) {
+                    case 'ArrowUp':
+                    case 'KeyW': moveForward = false; break;
+                    case 'ArrowLeft':
+                    case 'KeyA': moveLeft = false; break;
+                    case 'ArrowDown':
+                    case 'KeyS': moveBackward = false; break;
+                    case 'ArrowRight':
+                    case 'KeyD': moveRight = false; break;
+                }
+            };
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+
+            // 生成迷宮與世界
+            createMazeWorld();
+
+            // 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        // --- 程式化紋理生成 (模擬校舍窗戶) ---
+        function createBuildingTexture(colorHex) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64;
+            canvas.height = 64;
+            const context = canvas.getContext('2d');
+            
+            // 底色
+            context.fillStyle = colorHex;
+            context.fillRect(0, 0, 64, 64);
+
+            // 窗戶
+            context.fillStyle = '#87CEEB'; // 玻璃藍
+            // 畫兩個窗戶
+            context.fillRect(10, 10, 15, 25);
+            context.fillRect(39, 10, 15, 25);
+            context.fillRect(10, 40, 15, 10); // 下方小窗
+            context.fillRect(39, 40, 15, 10);
+
+            // 窗框陰影
+            context.strokeStyle = 'rgba(0,0,0,0.2)';
+            context.lineWidth = 2;
+            context.strokeRect(10, 10, 15, 25);
+            context.strokeRect(39, 10, 15, 25);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter; // 保持像素風格
+            return texture;
+        }
+
+        // --- 迷宮演算法 ---
+        function generateMazeData(width, height) {
+            let map = Array(height).fill().map(() => Array(width).fill(1));
+            
+            function carve(x, y) {
+                const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => Math.random() - 0.5);
+                directions.forEach(([dx, dy]) => {
+                    const nx = x + dx * 2;
+                    const ny = y + dy * 2;
+                    if (nx > 0 && nx < width - 1 && ny > 0 && ny < height - 1 && map[ny][nx] === 1) {
+                        map[y + dy][x + dx] = 0;
+                        map[ny][nx] = 0;
+                        carve(nx, ny);
+                    }
+                });
+            }
+            map[1][1] = 0;
+            carve(1, 1);
+            return map;
+        }
+
+        function createMazeWorld() {
+            maze = generateMazeData(MAZE_SIZE, MAZE_SIZE);
+
+            // 地板 - 草地綠
+            const floorGeometry = new THREE.PlaneGeometry(MAZE_SIZE * TILE_SIZE * 2, MAZE_SIZE * TILE_SIZE * 2);
+            floorGeometry.rotateX(-Math.PI / 2);
+            const floorMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x55aa55, // 草地綠
+                roughness: 1,
+                metalness: 0
+            });
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // 建築材質 (灰牆與紅磚)
+            const greyBuildingMat = new THREE.MeshStandardMaterial({ 
+                color: 0xcccccc, 
+                map: createBuildingTexture('#aaaaaa'),
+                roughness: 0.8 
+            });
+            const redBuildingMat = new THREE.MeshStandardMaterial({ 
+                color: 0xd35400,
+                map: createBuildingTexture('#c0392b'),
+                roughness: 0.9
+            });
+
+            const boxGeo = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, TILE_SIZE);
+            
+            // 樹木幾何
+            const treeTrunkGeo = new THREE.CylinderGeometry(1, 1, 4, 6);
+            const treeLeavesGeo = new THREE.ConeGeometry(4, 10, 8);
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5D4037 });
+            const leavesMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+
+            for (let y = 0; y < MAZE_SIZE; y++) {
+                for (let x = 0; x < MAZE_SIZE; x++) {
+                    const posX = (x - MAZE_SIZE / 2) * TILE_SIZE;
+                    const posZ = (y - MAZE_SIZE / 2) * TILE_SIZE;
+
+                    if (maze[y][x] === 1) {
+                        // 隨機選擇建築風格
+                        const isRed = Math.random() > 0.6;
+                        const wall = new THREE.Mesh(boxGeo, isRed ? redBuildingMat : greyBuildingMat);
+                        
+                        wall.position.set(posX, WALL_HEIGHT / 2, posZ);
+                        wall.castShadow = true;
+                        wall.receiveShadow = true;
+                        scene.add(wall);
+                    } else {
+                        // 這裡有可能是路，隨機種樹 (不要擋路中間)
+                        if (Math.random() > 0.85) {
+                            const treeGroup = new THREE.Group();
+                            const trunk = new THREE.Mesh(treeTrunkGeo, trunkMat);
+                            trunk.position.y = 2;
+                            const leaves = new THREE.Mesh(treeLeavesGeo, leavesMat);
+                            leaves.position.y = 8;
+                            treeGroup.add(trunk);
+                            treeGroup.add(leaves);
+                            
+                            // 稍微偏移，貼近牆邊
+                            const offsetX = (Math.random() - 0.5) * (TILE_SIZE * 0.6);
+                            const offsetZ = (Math.random() - 0.5) * (TILE_SIZE * 0.6);
+                            treeGroup.position.set(posX + offsetX, 0, posZ + offsetZ);
+                            
+                            treeGroup.scale.setScalar(0.7 + Math.random() * 0.5); // 隨機大小
+                            scene.add(treeGroup);
+                        }
+                    }
+                }
+            }
+
+            // 玩家初始
+            controls.getObject().position.set(
+                (1 - MAZE_SIZE / 2) * TILE_SIZE, 
+                8, 
+                (1 - MAZE_SIZE / 2) * TILE_SIZE
+            );
+
+            // 出口
+            let exitX = MAZE_SIZE - 2;
+            let exitY = MAZE_SIZE - 2;
+            if (maze[exitY][exitX] === 1) { exitX = 1; exitY = MAZE_SIZE - 2; }
+
+            exitPosition.set(
+                (exitX - MAZE_SIZE / 2) * TILE_SIZE,
+                0,
+                (exitY - MAZE_SIZE / 2) * TILE_SIZE
+            );
+
+            // 出口光柱 (綠色雷射)
+            const exitGeo = new THREE.CylinderGeometry(1, 1, 100, 16);
+            const exitMat = new THREE.MeshBasicMaterial({ 
+                color: 0x00ff00, 
+                transparent: true, 
+                opacity: 0.5,
+                blending: THREE.AdditiveBlending
+            });
+            const exitMesh = new THREE.Mesh(exitGeo, exitMat);
+            exitMesh.position.copy(exitPosition);
+            exitMesh.position.y = 50;
+            scene.add(exitMesh);
+
+            // 地板上的出口標記
+            const exitBaseGeo = new THREE.CircleGeometry(8, 32);
+            const exitBaseMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+            const exitBase = new THREE.Mesh(exitBaseGeo, exitBaseMat);
+            exitBase.rotation.x = -Math.PI/2;
+            exitBase.position.copy(exitPosition);
+            exitBase.position.y = 0.1;
+            scene.add(exitBase);
+
+            const exitLight = new THREE.PointLight(0x00ff00, 5, 40);
+            exitLight.position.set(exitPosition.x, 10, exitPosition.z);
+            scene.add(exitLight);
+        }
+
+        // --- 碰撞 & 邏輯 (同前) ---
+        function startTimer() {
+            clearInterval(timerInterval);
+            const timeDisplay = document.getElementById('time-display');
+            timerInterval = setInterval(() => {
+                if (!gameActive) return;
+                timeLeft--;
+                const m = Math.floor(timeLeft / 60);
+                const s = timeLeft % 60;
+                timeDisplay.textContent = `時間: ${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+                if (timeLeft <= 0) gameOver(false);
+            }, 1000);
+        }
+
+        function checkWinCondition() {
+            const playerPos = controls.getObject().position;
+            // 忽略Y軸距離
+            const dist = Math.sqrt(Math.pow(playerPos.x - exitPosition.x, 2) + Math.pow(playerPos.z - exitPosition.z, 2));
+            if (dist < 10) gameOver(true);
+        }
+
+        function gameOver(win) {
+            gameActive = false;
+            controls.unlock();
+            clearInterval(timerInterval);
+            const screen = document.getElementById('result-screen');
+            const msg = document.getElementById('result-message');
+            const detail = document.getElementById('result-detail');
+            screen.style.display = 'flex';
+            document.getElementById('blocker').style.display = 'none';
+
+            if (win) {
+                msg.textContent = "任務完成！";
+                msg.className = "win-text";
+                detail.textContent = "你成功逃出了校園迷宮！";
+            } else {
+                msg.textContent = "時間到！";
+                msg.className = "lose-text";
+                detail.textContent = "上課鐘響了，你還沒找到教室...";
+            }
+        }
+
+        function checkCollision(nextPos) {
+            const pX = nextPos.x;
+            const pZ = nextPos.z;
+            const r = 4; // 碰撞半徑
+
+            const checks = [{x:pX+r, z:pZ}, {x:pX-r, z:pZ}, {x:pX, z:pZ+r}, {x:pX, z:pZ-r}];
+            for (let p of checks) {
+                const gx = Math.round((p.x / TILE_SIZE) + (MAZE_SIZE - 1) / 2);
+                const gy = Math.round((p.z / TILE_SIZE) + (MAZE_SIZE - 1) / 2);
+                if (gx >= 0 && gx < MAZE_SIZE && gy >= 0 && gy < MAZE_SIZE) {
+                    if (maze[gy][gx] === 1) return true;
+                }
+            }
+            return false;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 修正：即使暫停也要更新時間，避免下次開始時 delta 過大
+            const time = performance.now();
+            // 限制最大 delta 為 0.1 秒，防止切換分頁或卡頓時穿牆
+            const delta = Math.min((time - prevTime) / 1000, 0.1); 
+            prevTime = time;
+
+            // 只有在遊戲進行且滑鼠鎖定時才運算物理
+            if (gameActive && controls.isLocked) {
+                // 增加摩擦力和速度感
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                const speed = 400.0; // 稍微調快速度讓移動更順暢
+                if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
+
+                const moveX = -velocity.x * delta;
+                const moveZ = -velocity.z * delta;
+
+                controls.moveRight(moveX);
+                if (checkCollision(controls.getObject().position)) controls.moveRight(-moveX);
+
+                controls.moveForward(moveZ);
+                if (checkCollision(controls.getObject().position)) controls.moveForward(-moveZ);
+
+                checkWinCondition();
+            }
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
